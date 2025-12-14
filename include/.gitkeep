@@ -1,0 +1,6 @@
+# GLAD 头文件目录
+# 
+# 请将 GLAD 生成的头文件放在此目录下:
+# - include/glad/glad.h
+# - include/glad/khrplatform.h
+

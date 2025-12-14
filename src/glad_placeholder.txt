@@ -1,0 +1,12 @@
+# GLAD 源文件占位符
+# 
+# 请将 GLAD 生成的源文件放在此位置:
+# - src/glad.c
+# 
+# 获取 GLAD 文件:
+# 1. 访问 https://glad.dav1d.de/
+# 2. 选择配置: OpenGL 4.6, Core Profile, 勾选 "Generate a loader"
+# 3. 下载并解压
+# 4. 将 src/glad.c 复制到此目录
+# 5. 将 include/glad/ 目录复制到项目根目录的 include/ 目录
+
