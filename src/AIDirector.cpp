@@ -30,7 +30,7 @@ void AIDirector::Update(float deltaTime, bool playerIsShooting) {
             if (m_tension > 3.0f) {
                 m_directorState = DirectorState::Building;
                 m_stateTimer = 0.0f;
-                std::cout << "[AI导演] 进入紧张期..." << std::endl;
+                std::cout << "[AI Director] Entering build-up phase..." << std::endl;
             }
             
             // 偶尔生成零星敌人 (每 3 秒 1 个)
@@ -45,7 +45,7 @@ void AIDirector::Update(float deltaTime, bool playerIsShooting) {
             if (m_tension > 8.0f || m_stateTimer > 5.0f) {
                 TriggerHorde(20);
                 m_directorState = DirectorState::Horde;
-                std::cout << "[AI导演] ⚠️ 尸潮来袭! ⚠️" << std::endl;
+                std::cout << "[AI Director] ⚠️ Horde incoming! ⚠️" << std::endl;
             } else if (m_spawnTimer > 1.5f && currentCount < 10) {
                 SpawnWave(2);
                 m_spawnTimer = 0.0f;
@@ -68,7 +68,7 @@ void AIDirector::Update(float deltaTime, bool playerIsShooting) {
                 m_directorState = DirectorState::Calm;
                 m_tension = 0.0f; // 重置压力
                 m_stateTimer = 0.0f;
-                std::cout << "[AI导演] 尸潮结束，进入平静期。" << std::endl;
+                std::cout << "[AI Director] Horde ended. Back to calm." << std::endl;
             }
             break;
         }

@@ -13,8 +13,8 @@ Mesh::Mesh(const std::vector<Vertex>& vertices, const std::vector<GLuint>& indic
     : vertices(vertices), indices(indices), VAO(0), VBO(0), EBO(0)
 {
     setupMesh();
-    std::cout << "[Mesh] 网格加载成功! 顶点数: " << vertices.size() 
-              << ", 索引数: " << indices.size() << std::endl;
+    std::cout << "[Mesh] Loaded. Vertices: " << vertices.size() 
+              << ", Indices: " << indices.size() << std::endl;
 }
 
 Mesh::~Mesh()
@@ -87,7 +87,7 @@ void Mesh::draw() const
 {
     if (VAO == 0)
     {
-        std::cerr << "[Mesh Error] 尝试渲染未初始化的网格!" << std::endl;
+        std::cerr << "[Mesh Error] Attempted to render an uninitialized mesh!" << std::endl;
         return;
     }
 

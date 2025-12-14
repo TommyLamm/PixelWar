@@ -9,7 +9,7 @@ GameSettings Settings::Load(const std::string& filename)
     std::ifstream file(filename);
     if (!file.is_open())
     {
-        std::cout << "[设置] 配置文件不存在，使用默认值" << std::endl;
+        std::cout << "[Settings] Config file not found, using defaults" << std::endl;
         return settings;
     }
 
@@ -31,7 +31,7 @@ GameSettings Settings::Load(const std::string& filename)
             }
         }
     }
-    std::cout << "[设置] 配置加载完成: Sens=" << settings.sensitivity << ", FOV=" << settings.fov << std::endl;
+    std::cout << "[Settings] Loaded: Sens=" << settings.sensitivity << ", FOV=" << settings.fov << std::endl;
     return settings;
 }
 
@@ -42,6 +42,6 @@ void Settings::Save(const std::string& filename, const GameSettings& settings)
     {
         file << "sensitivity=" << settings.sensitivity << "\n";
         file << "fov=" << settings.fov << "\n";
-        std::cout << "[设置] 配置已保存" << std::endl;
+        std::cout << "[Settings] Saved" << std::endl;
     }
 }

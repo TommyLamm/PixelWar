@@ -173,14 +173,16 @@ void Enemy::Update(float deltaTime, const glm::vec3& playerPos, const std::vecto
     }
 }
 
-void Enemy::TakeDamage(float damage)
+bool Enemy::TakeDamage(float damage)
 {
-    if (m_state != EnemyState::Active) return;
+    if (m_state != EnemyState::Active) return false;
     
     m_health -= damage;
     if (m_health <= 0) {
         Kill();
+        return true;
     }
+    return false;
 }
 
 void Enemy::Kill()

@@ -10,9 +10,12 @@
 #include <cstdlib>
 #include <limits>
 #include <algorithm>
+#include <fstream>
 
 #ifdef _WIN32
 #include <windows.h>
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
 #endif
 
 // GLAD OpenGL 函数加载器
@@ -43,6 +46,9 @@
 #include <random>
 #include <cstdint>
 #include <cmath>
+#include <cstddef>
+#include <filesystem>
+#include <sstream>
 
 // ------------------------- Perlin Noise 2D ----------------------------------
 struct Perlin2D {
@@ -191,6 +197,32 @@ inline glm::vec3 getBlockColor(BlockType t)
 constexpr int WINDOW_WIDTH = 1600;      // 窗口宽度 (像素)
 constexpr int WINDOW_HEIGHT = 900;      // 窗口高度 (像素)
 constexpr const char* WINDOW_TITLE = "Pixel War";
+int g_windowWidth = WINDOW_WIDTH;
+int g_windowHeight = WINDOW_HEIGHT;
+constexpr float ENEMY_MAX_HEALTH = 100.0f;
+constexpr float BULLET_DAMAGE = 20.0f; // about 5 shots to kill (100 HP)
+
+struct ResolutionOption
+{
+    int width;
+    int height;
+    const char* label;
+};
+
+constexpr ResolutionOption RESOLUTION_OPTIONS[] = {
+    {1280, 720,  "1280x720"},
+    {1600, 900,  "1600x900"},
+    {1920, 1080, "1920x1080"}
+};
+constexpr int RESOLUTION_COUNT = static_cast<int>(sizeof(RESOLUTION_OPTIONS) / sizeof(ResolutionOption));
+int g_resolutionIndex = -1; // -1 means custom (e.g., drag-resize)
+std::string g_resolutionLabel = "Custom";
+
+#ifdef _WIN32
+std::string g_sfxShootPath = "assets/sfx_shoot.wav";
+std::string g_sfxHitPath = "assets/sfx_hit.wav";
+std::string g_sfxKillPath = "assets/sfx_kill.wav";
+#endif
 
 // 射击相关配置
 constexpr float FIRE_RATE = 0.1f;       // 射速 (秒/发)
@@ -480,6 +512,10 @@ void RenderLoop();
 
 // 全局函数声明
 void UpdateWindowTitle();
+void EnsureSfxFiles();
+void PlaySfxShoot();
+void PlaySfxHit();
+void PlaySfxKill();
 
 // ============================================================================
 // 回调函数实现
@@ -487,38 +523,100 @@ void UpdateWindowTitle();
 
 void FramebufferSizeCallback(GLFWwindow* window, int width, int height)
 {
-    // 强制保持 16:9 比例 (Letterboxing)
-    const float TARGET_ASPECT_RATIO = 16.0f / 9.0f;
-    
-    float windowAspectRatio = (float)width / (float)height;
-    int viewportWidth, viewportHeight, viewportX, viewportY;
-
-    if (windowAspectRatio > TARGET_ASPECT_RATIO)
-    {
-        // 窗口过宽，上下留黑 (Pillarboxing 实际上是左右留黑，这里代码逻辑是左右留黑)
-        // 修正：如果宽高比 > 16/9，说明宽度太大，应该以高度为基准，左右留黑
-        viewportHeight = height;
-        viewportWidth = (int)(height * TARGET_ASPECT_RATIO);
-        viewportX = (width - viewportWidth) / 2;
-        viewportY = 0;
+    // 自适应窗口大小，直接使用当前宽高
+    g_windowWidth = std::max(1, width);
+    g_windowHeight = std::max(1, height);
+    glViewport(0, 0, g_windowWidth, g_windowHeight);
+    // 更新鼠标基准，避免尺寸变化导致的大幅跳变
+    g_lastX = g_windowWidth / 2.0f;
+    g_lastY = g_windowHeight / 2.0f;
+    g_resolutionIndex = -1;
+    g_resolutionLabel = std::to_string(g_windowWidth) + "x" + std::to_string(g_windowHeight);
+    if (g_isPaused) {
+        UpdateWindowTitle();
     }
-    else
-    {
-        // 窗口过高，上下留黑 (Letterboxing)
-        viewportWidth = width;
-        viewportHeight = (int)(width / TARGET_ASPECT_RATIO);
-        viewportX = 0;
-        viewportY = (height - viewportHeight) / 2;
-    }
-
-    // 设置视口 (渲染区域)
-    glViewport(viewportX, viewportY, viewportWidth, viewportHeight);
-    
-    // 设置裁剪区域外的颜色为黑色
-    // 注意：glClear 会清除整个颜色缓冲，不仅仅是视口区域。
-    // 为了只保留视口内的内容，通常不需要做额外操作，因为全屏 Clear 为黑色背景即可。
-    // 但如果有特殊的背景色，这里可能需要用到 glScissor 来限制清除区域，或者直接全屏黑底。
 }
+
+void ApplyResolution(int index)
+{
+    if (index < 0 || index >= RESOLUTION_COUNT) return;
+    g_resolutionIndex = index;
+    const auto& res = RESOLUTION_OPTIONS[index];
+    if (g_window)
+    {
+        glfwSetWindowSize(g_window, res.width, res.height);
+        // reset last mouse positions to center of new window to avoid jump
+        g_lastX = res.width / 2.0f;
+        g_lastY = res.height / 2.0f;
+    }
+    g_windowWidth = res.width;
+    g_windowHeight = res.height;
+    g_resolutionLabel = res.label;
+    std::cout << "[Settings] Resolution set to " << res.label << std::endl;
+    if (g_isPaused) {
+        UpdateWindowTitle();
+    }
+}
+
+#ifdef _WIN32
+// Simple PCM 16-bit mono sine wave writer
+void WriteSineWav(const std::string& path, int sampleRate, float freq, float durationSec, float volume)
+{
+    int totalSamples = static_cast<int>(durationSec * sampleRate);
+    int dataSize = totalSamples * 2; // 16-bit mono
+    int chunkSize = 36 + dataSize;
+
+    std::ofstream ofs(path, std::ios::binary);
+    if (!ofs.is_open()) return;
+
+    auto write32 = [&](uint32_t v){ ofs.write(reinterpret_cast<const char*>(&v), 4); };
+    auto write16 = [&](uint16_t v){ ofs.write(reinterpret_cast<const char*>(&v), 2); };
+
+    ofs.write("RIFF", 4);
+    write32(chunkSize);
+    ofs.write("WAVE", 4);
+    ofs.write("fmt ", 4);
+    write32(16);           // PCM chunk size
+    write16(1);            // PCM
+    write16(1);            // Mono
+    write32(sampleRate);
+    write32(sampleRate * 2); // byte rate
+    write16(2);            // block align
+    write16(16);           // bits per sample
+    ofs.write("data", 4);
+    write32(dataSize);
+
+    for (int i = 0; i < totalSamples; ++i)
+    {
+        float t = static_cast<float>(i) / static_cast<float>(sampleRate);
+        float sample = std::sin(2.0f * 3.14159265f * freq * t) * volume;
+        int16_t s = static_cast<int16_t>(std::clamp(sample, -1.0f, 1.0f) * 32767.0f);
+        ofs.write(reinterpret_cast<const char*>(&s), 2);
+    }
+}
+
+void EnsureSfxFiles()
+{
+    std::filesystem::create_directories("assets");
+    if (!std::filesystem::exists(g_sfxShootPath)) WriteSineWav(g_sfxShootPath, 44100, 820.0f, 0.08f, 0.35f);
+    if (!std::filesystem::exists(g_sfxHitPath))   WriteSineWav(g_sfxHitPath,   44100, 420.0f, 0.10f, 0.45f);
+    if (!std::filesystem::exists(g_sfxKillPath))  WriteSineWav(g_sfxKillPath,  44100, 180.0f, 0.20f, 0.55f);
+}
+
+void PlaySfx(const std::string& path)
+{
+    PlaySoundA(path.c_str(), NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+}
+
+void PlaySfxShoot() { PlaySfx(g_sfxShootPath); }
+void PlaySfxHit()   { PlaySfx(g_sfxHitPath); }
+void PlaySfxKill()  { PlaySfx(g_sfxKillPath); }
+#else
+void EnsureSfxFiles() {}
+void PlaySfxShoot() {}
+void PlaySfxHit() {}
+void PlaySfxKill() {}
+#endif
 
 void ErrorCallback(int error_code, const char* description)
 {
@@ -541,6 +639,7 @@ void KeyCallback([[maybe_unused]] GLFWwindow* window, int key, [[maybe_unused]] 
             std::cout << "  ↑ / ↓ : Adjust mouse sensitivity" << std::endl;
             std::cout << "  ← / → : Adjust field of view (FOV)" << std::endl;
             std::cout << "  ESC   : Resume game" << std::endl;
+            std::cout << "  Current resolution: " << g_resolutionLabel << std::endl;
             std::cout << "----------------------------------------" << std::endl;
             
             // 暂停时显示鼠标
@@ -557,15 +656,18 @@ void KeyCallback([[maybe_unused]] GLFWwindow* window, int key, [[maybe_unused]] 
             glfwSetWindowTitle(window, WINDOW_TITLE); // 恢复默认标题
         }
     }
+
 }
 
 void UpdateWindowTitle()
 {
     if (!g_window) return;
     char title[256];
-    sprintf(title, "[Paused] Settings - Sensitivity: %.2f (↑↓) | FOV: %.1f (←→)", 
+    const char* resLabel = g_resolutionLabel.c_str();
+    sprintf(title, "[Paused] Settings - Sensitivity: %.2f (↑↓) | FOV: %.1f (←→) | Res: %s", 
             g_camera.GetMouseSensitivity(), 
-            g_camera.GetFOV());
+            g_camera.GetFOV(),
+            resLabel);
     glfwSetWindowTitle(g_window, title);
 }
 
@@ -624,6 +726,7 @@ void ProcessShooting()
     float currentTime = (float)glfwGetTime();
     if (currentTime - g_lastShootTime < FIRE_RATE) return;
     g_lastShootTime = currentTime;
+    PlaySfxShoot();
 
     // 1. 创建射线
     Ray ray;
@@ -720,8 +823,9 @@ CheckEnemies:
     }
     else if (hitEnemy)
     {
-        // std::cout << "[Shoot] Hit enemy! Distance: " << closestT << std::endl;
-        hitEnemy->TakeDamage(100.0f); 
+        bool killed = hitEnemy->TakeDamage(BULLET_DAMAGE); 
+        if (killed) PlaySfxKill();
+        else PlaySfxHit();
     }
 
     // 5. 添加子弹轨迹
@@ -779,6 +883,24 @@ bool InitializeWindow()
     }
     std::cout << "[Init] GLFW initialized" << std::endl;
 
+    // Detect desktop resolution and pick 2/3 for default window size
+    GLFWmonitor* primary = glfwGetPrimaryMonitor();
+    const GLFWvidmode* mode = primary ? glfwGetVideoMode(primary) : nullptr;
+    if (mode)
+    {
+        g_windowWidth = std::max(640, mode->width * 2 / 3);
+        g_windowHeight = std::max(360, mode->height * 2 / 3);
+        g_resolutionIndex = -1;
+        g_resolutionLabel = std::to_string(g_windowWidth) + "x" + std::to_string(g_windowHeight);
+    }
+    else
+    {
+        g_windowWidth = WINDOW_WIDTH;
+        g_windowHeight = WINDOW_HEIGHT;
+        g_resolutionIndex = 1;
+        g_resolutionLabel = RESOLUTION_OPTIONS[g_resolutionIndex].label;
+    }
+
     // 3. 配置 OpenGL 上下文属性
     // 这些提示必须在 glfwCreateWindow 之前设置
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);    // OpenGL 主版本号
@@ -790,14 +912,14 @@ bool InitializeWindow()
     glfwWindowHint(GLFW_SAMPLES, 4);
 
     // 4. 创建窗口对象
-    g_window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE, nullptr, nullptr);
+    g_window = glfwCreateWindow(g_windowWidth, g_windowHeight, WINDOW_TITLE, nullptr, nullptr);
     if (!g_window)
     {
         std::cerr << "[Error] Failed to create window! Check GPU driver and OpenGL support" << std::endl;
         glfwTerminate();
         return false;
     }
-    std::cout << "[Init] Window created (" << WINDOW_WIDTH << "x" << WINDOW_HEIGHT << ")" << std::endl;
+    std::cout << "[Init] Window created (" << g_windowWidth << "x" << g_windowHeight << ")" << std::endl;
 
     // 5. 将 OpenGL 上下文绑定到当前线程
     // 必须在调用任何 OpenGL 函数之前执行
@@ -828,6 +950,10 @@ bool InitializeWindow()
     g_camera.SetFOV(settings.fov);
     
     std::cout << "[Init] Camera parameters configured" << std::endl;
+
+    // Sync mouse center with initial window size
+    g_lastX = g_windowWidth / 2.0f;
+    g_lastY = g_windowHeight / 2.0f;
 
     std::cout << "[Init] GLFW window initialization completed" << std::endl;
     return true;
@@ -880,6 +1006,7 @@ bool InitializeGLAD()
 bool InitializeScene()
 {
     std::cout << "[Init] Building scene..." << std::endl;
+    EnsureSfxFiles();
 
     // 1. 加载着色器
     g_shader = new Shader("shaders/phong.vert", "shaders/phong.frag");
@@ -1154,6 +1281,8 @@ void RenderLoop()
         float currentFrame = static_cast<float>(glfwGetTime());
         g_deltaTime = currentFrame - g_lastFrame;
         g_lastFrame = currentFrame;
+        // Clamp delta time to avoid physics tunneling during window resize stalls
+        g_deltaTime = std::min(g_deltaTime, 0.05f);
 
         // -------- 事件处理阶段 --------
         // 处理所有待处理的窗口事件 (键盘、鼠标、窗口大小调整等)
@@ -1196,10 +1325,11 @@ void RenderLoop()
 
         // 获取摄像机的观察矩阵和投影矩阵
         glm::mat4 view = g_camera.GetViewMatrix();
-        // 投影矩阵需要使用正确的 Aspect Ratio (16.0/9.0)，而不是窗口当前的宽高比
+        // 投影矩阵使用当前窗口宽高比，支持任意窗口拉伸
+        float aspect = (g_windowHeight > 0) ? (static_cast<float>(g_windowWidth) / static_cast<float>(g_windowHeight)) : (16.0f / 9.0f);
         glm::mat4 projection = g_camera.GetProjectionMatrix(
             g_camera.GetFOV(),                        // FOV (动态获取)
-            16.0f / 9.0f,                             // 固定宽高比 16:9
+            aspect,                                   // 当前窗口宽高比
             0.1f,                                     // 近裁剪面
             100.0f                                    // 远裁剪面
         );
@@ -1337,51 +1467,84 @@ void RenderLoop()
             }
         }
 
-        // 4. 渲染武器 (简单的长方体，固定在摄像机前方)
+#if 0 // Disabled enemy health bars
+        // 3.1 敌人血条（屏幕空间绘制）
         {
-            // 清除深度缓冲的一小部分，或者直接绘制在最上层？
-            // 简单做法：直接绘制，利用深度测试（武器很近，自然会挡住远的物体）
-            // 但为了防止穿模，通常会清除深度缓冲，或者放在最后绘制并临时调整深度范围
-            glClear(GL_DEPTH_BUFFER_BIT); 
+            glDisable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            g_crosshairShader->use();
+            g_crosshairShader->setFloat("uAlpha", 0.65f);
+            glBindVertexArray(g_uiVAO);
 
-            // 使用 Identity View 矩阵，使物体相对于摄像机固定
+            auto DrawRect = [&](float x, float y, float w, float h, glm::vec3 color) {
+                if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h)) return;
+                g_crosshairShader->setVec3("uColor", color);
+                glm::mat4 model = glm::mat4(1.0f);
+                model = glm::translate(model, glm::vec3(x, y, 0.0f));
+                model = glm::scale(model, glm::vec3(w, h, 1.0f));
+                g_crosshairShader->setMat4("uModel", model);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            };
+
+            const auto& activeEnemies = g_enemyPool->GetActiveEnemies();
+            for (auto enemy : activeEnemies)
+            {
+                if (!enemy->IsActive()) continue;
+                glm::vec3 headPos = enemy->GetPosition() + glm::vec3(0.0f, enemy->GetScale().y * 0.6f + 0.4f, 0.0f);
+                glm::vec4 clip = projection * view * glm::vec4(headPos, 1.0f);
+                if (clip.w <= 0.0f) continue;
+                glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                if (!std::isfinite(ndc.x) || !std::isfinite(ndc.y)) continue;
+                if (ndc.x < -1.0f || ndc.x > 1.0f || ndc.y < -1.0f || ndc.y > 1.0f) continue;
+                if (ndc.z < -1.0f || ndc.z > 1.0f) continue;
+
+                float winW = static_cast<float>(std::max(1, g_windowWidth));
+                float winH = static_cast<float>(std::max(1, g_windowHeight));
+                float barWidth = 40.0f / winW * 2.0f;   // 40px
+                float barHeight = 6.0f / winH * 2.0f;   // 6px
+                float pad = 2.0f / winW * 2.0f;         // 2px (x)
+                float startX = ndc.x - barWidth * 0.5f;
+                float startY = ndc.y + (24.0f / winH * 2.0f); // 24px above
+                float hp = glm::clamp(enemy->GetHealth(), 0.0f, ENEMY_MAX_HEALTH);
+                float ratio = hp / ENEMY_MAX_HEALTH;
+                glm::vec3 bgColor(0.08f, 0.08f, 0.08f);
+                glm::vec3 hpColor = (ratio > 0.5f) ? glm::vec3(0.25f, 0.8f, 0.25f) : glm::vec3(0.95f, 0.35f, 0.1f);
+
+                DrawRect(startX, startY, barWidth, barHeight, bgColor);
+                DrawRect(startX + pad, startY + pad, (barWidth - pad * 2.0f) * ratio, barHeight - pad * 2.0f, hpColor);
+            }
+
+            g_crosshairShader->setFloat("uAlpha", 1.0f);
+            glDisable(GL_BLEND);
+            glBindVertexArray(0);
+            glUseProgram(0);
+            glDepthMask(GL_TRUE);
+            glEnable(GL_DEPTH_TEST);
+        }
+#endif
+
+        // 4. 渲染武器 (右下角小尺寸，避免遮挡视野)
+        {
+            glEnable(GL_DEPTH_TEST);
+
             glm::mat4 viewIdentity = glm::mat4(1.0f);
             g_shader->setMat4("uView", viewIdentity);
 
-            // 将武器放置在摄像机视野前方 (View Space)
-            // 右手边 (0.2), 下方 (-0.2), 前方 (-0.4)
             glm::mat4 model = glm::mat4(1.0f);
-            model = glm::translate(model, glm::vec3(0.2f, -0.2f, -0.4f)); 
-            model = glm::scale(model, glm::vec3(0.05f, 0.05f, 0.4f)); // 长条形
-            // 稍微旋转一点，指向中心
-            model = glm::rotate(model, glm::radians(5.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+            model = glm::translate(model, glm::vec3(0.5f, -0.5f, -0.7f)); 
+            model = glm::scale(model, glm::vec3(0.018f, 0.035f, 0.22f));
+            model = glm::rotate(model, glm::radians(12.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
             g_shader->setMat4("uModel", model);
-
-            // 重新计算法线矩阵 (虽然对于纯色物体光照没那么重要，但保持正确性)
             glm::mat3 normalMatrix = glm::mat3(glm::transpose(glm::inverse(model)));
             g_shader->setMat3("uNormalMatrix", normalMatrix);
 
-            // 武器颜色 (深灰色)
-            g_shader->setVec3("uMaterial_Diffuse", glm::vec3(0.3f, 0.3f, 0.35f));
-            g_shader->setVec3("uMaterial_Specular", glm::vec3(0.8f, 0.8f, 0.8f));
-            g_shader->setFloat("uMaterial_Shininess", 64.0f);
-
-            // uCameraPos is not important here because we render in view space and the camera sits at (0,0,0).
-            // The shader uses uCameraPos for specular highlights, so when model/view are in view space,
-            // uCameraPos should also be (0,0,0).
-            // Our shader operates in world space, so this is a small hack.
-            // To keep it simple we assume the weapon still uses world lighting even though it moves with the camera.
-            // A dedicated UI/Weapon shader would be better; for now we just draw and accept imperfect lighting.
-            g_shader->setVec3("uCameraPos", glm::vec3(0.0f)); // 在 View Space，相机在原点
-
-            // Should we convert the light position into view space?
-            // The shader calculations are in world space.
-            // When uView is identity we effectively treat world space as view space,
-            // so uModel coordinates become the final vertex coordinates (in view space).
-            // That makes lighting inconsistent because uLight_Position remains in world space.
-            // Good enough for a simple demo as long as the weapon is visible.
-            
+            g_shader->setVec3("uMaterial_Diffuse", glm::vec3(0.2f, 0.2f, 0.25f));
+            g_shader->setVec3("uMaterial_Specular", glm::vec3(0.3f, 0.3f, 0.3f));
+            g_shader->setFloat("uMaterial_Shininess", 24.0f);
+            g_shader->setVec3("uCameraPos", glm::vec3(0.0f)); 
             g_cubeMesh->draw();
         }
 
@@ -1445,6 +1608,7 @@ void RenderLoop()
         {
             glDisable(GL_DEPTH_TEST); // 关闭深度测试，确保准星在最上层
             g_crosshairShader->use();
+            g_crosshairShader->setFloat("uAlpha", 1.0f);
             g_crosshairShader->setVec3("uColor", glm::vec3(0.0f, 1.0f, 0.0f)); // 绿色准星
             
             // 准星不需要模型变换，或者设置为单位矩阵
@@ -1460,6 +1624,7 @@ void RenderLoop()
             // 绘制暂停菜单 UI (进度条)
             glDisable(GL_DEPTH_TEST);
             g_crosshairShader->use(); // 复用这个简单的 2D Shader
+            g_crosshairShader->setFloat("uAlpha", 0.4f); // 半透明，避免遮挡视野
 
             // 辅助 Lambda: 绘制矩形 (x,y 是左下角, w,h 是宽高, color 是颜色)
             auto DrawRect = [&](float x, float y, float w, float h, glm::vec3 color) {
@@ -1529,24 +1694,31 @@ void RenderLoop()
             float sens = g_camera.GetMouseSensitivity();
             float sensProgress = glm::clamp((sens - 0.01f) / (1.0f - 0.01f), 0.0f, 1.0f); // 假设最大灵敏度 1.0
             
+            float barW = 0.25f;
+            float barH = 0.02f;
+            float barX = -barW * 0.5f;
+            float barY = 0.25f;
+
             // 背景 (深灰)
-            DrawRect(-0.3f, 0.2f, 0.6f, 0.05f, glm::vec3(0.2f, 0.2f, 0.2f));
+            DrawRect(barX, barY, barW, barH, glm::vec3(0.15f, 0.15f, 0.15f));
             // 进度 (绿色)
-            DrawRect(-0.3f, 0.2f, 0.6f * sensProgress, 0.05f, glm::vec3(0.2f, 0.8f, 0.2f));
-            // 数值显示
-            DrawFloat(sens, 0.35f, 0.2f, 0.03f, glm::vec3(0.2f, 0.8f, 0.2f));
+            DrawRect(barX, barY, barW * sensProgress, barH, glm::vec3(0.2f, 0.8f, 0.2f));
+            // 数值显示（更小字号，靠近右侧）
+            DrawFloat(sens, barX + barW + 0.05f, barY, 0.02f, glm::vec3(0.2f, 0.8f, 0.2f));
 
             // 2. FOV 进度条 (位置 y=-0.2)
             float fov = g_camera.GetFOV();
             float fovProgress = glm::clamp((fov - 10.0f) / (120.0f - 10.0f), 0.0f, 1.0f);
 
+            float fbarY = -0.25f;
             // 背景
-            DrawRect(-0.3f, -0.2f, 0.6f, 0.05f, glm::vec3(0.2f, 0.2f, 0.2f));
+            DrawRect(barX, fbarY, barW, barH, glm::vec3(0.15f, 0.15f, 0.15f));
             // 进度 (蓝色)
-            DrawRect(-0.3f, -0.2f, 0.6f * fovProgress, 0.05f, glm::vec3(0.2f, 0.2f, 0.8f));
+            DrawRect(barX, fbarY, barW * fovProgress, barH, glm::vec3(0.2f, 0.2f, 0.8f));
             // 数值显示
-            DrawFloat(fov, 0.35f, -0.2f, 0.03f, glm::vec3(0.2f, 0.2f, 0.8f));
+            DrawFloat(fov, barX + barW + 0.05f, fbarY, 0.02f, glm::vec3(0.2f, 0.2f, 0.8f));
 
+            g_crosshairShader->setFloat("uAlpha", 1.0f); // 恢复
             glEnable(GL_DEPTH_TEST);
         }
 

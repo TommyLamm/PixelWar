@@ -45,7 +45,7 @@ Shader::Shader(const std::string& vertexPath,
             glDeleteShader(geometryShader);
         }
 
-        std::cout << "[Shader] 着色器程序加载成功! 程序ID: " << ID << std::endl;
+        std::cout << "[Shader] Program loaded successfully. ID: " << ID << std::endl;
     }
     catch (const std::exception& e)
     {
@@ -80,7 +80,7 @@ Shader Shader::fromSource(const std::string& vertexCode,
             glDeleteShader(geometryShader);
         }
 
-        std::cout << "[Shader] 着色器程序(字符串)加载成功! 程序ID: " << shader.ID << std::endl;
+        std::cout << "[Shader] Program (from source) loaded successfully. ID: " << shader.ID << std::endl;
     }
     catch (const std::exception& e)
     {
@@ -105,7 +105,7 @@ std::string Shader::readShaderFile(const std::string& filePath)
     }
     catch (std::ifstream::failure& e)
     {
-        throw std::runtime_error("无法读取着色器文件: " + filePath + "\n错误详情: " + std::string(e.what()));
+        throw std::runtime_error("Failed to read shader file: " + filePath + "\nDetails: " + std::string(e.what()));
     }
 }
 
@@ -127,12 +127,12 @@ GLuint Shader::compileShader(GLenum type, const std::string& source)
         std::string shaderType;
         switch (type)
         {
-            case GL_VERTEX_SHADER: shaderType = "顶点着色器"; break;
-            case GL_FRAGMENT_SHADER: shaderType = "片段着色器"; break;
-            case GL_GEOMETRY_SHADER: shaderType = "几何着色器"; break;
-            default: shaderType = "未知着色器";
+            case GL_VERTEX_SHADER: shaderType = "Vertex shader"; break;
+            case GL_FRAGMENT_SHADER: shaderType = "Fragment shader"; break;
+            case GL_GEOMETRY_SHADER: shaderType = "Geometry shader"; break;
+            default: shaderType = "Unknown shader";
         }
-        throw std::runtime_error(shaderType + " 编译失败:\n" + std::string(infoLog));
+        throw std::runtime_error(shaderType + " compilation failed:\n" + std::string(infoLog));
     }
 
     return shader;
@@ -159,7 +159,7 @@ GLuint Shader::linkProgram(GLuint vertexShader, GLuint fragmentShader, GLuint ge
     if (!success)
     {
         glGetProgramInfoLog(program, 1024, nullptr, infoLog);
-        throw std::runtime_error("着色器程序链接失败:\n" + std::string(infoLog));
+        throw std::runtime_error("Shader program link failed:\n" + std::string(infoLog));
     }
 
     return program;
@@ -175,7 +175,7 @@ GLint Shader::getUniformLocation(const std::string& name) const
     GLint location = glGetUniformLocation(ID, name.c_str());
     if (location == -1)
     {
-        std::cerr << "[Shader Warning] 无法找到uniform变量: " << name << std::endl;
+        std::cerr << "[Shader Warning] Uniform not found: " << name << std::endl;
     }
     return location;
 }

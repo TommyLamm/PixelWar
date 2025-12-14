@@ -21,8 +21,8 @@ public:
     // 更新逻辑
     void Update(float deltaTime, const glm::vec3& playerPos, const std::vector<Enemy*>& activeEnemies, const std::vector<glm::vec3>& terrainBlocks);
     
-    // 受到伤害
-    void TakeDamage(float damage);
+    // 受到伤害，返回是否被击杀
+    bool TakeDamage(float damage);
     
     // 立即杀死 (用于测试或清理)
     void Kill();
@@ -35,6 +35,7 @@ public:
     glm::quat GetRotation() const { return m_rotation; }
     bool IsActive() const { return m_state == EnemyState::Active; }
     bool CanBeRecycled() const;
+    float GetHealth() const { return m_health; }
 
     // AABB 获取
     void getAABB(glm::vec3& min, glm::vec3& max) const;
