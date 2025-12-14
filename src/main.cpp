@@ -275,13 +275,13 @@ struct SpatialGrid {
     static const int SIZE_Y = 64;
     static const int SIZE_Z = 128;
     
-    // 存储 CubeObject 的指针，或者索引。
-    // 为了简单，我们只存储 "是否存在方块"，如果存在，我们再去找具体的 CubeObject?
-    // 或者存储 CubeObject* 的 vector? 
-    // 最快的方法：存储 std::vector<CubeObject*> 每个格子。
-    // 但是这样内存占用大。
-    // 实际上射击只需要知道 "击中位置"。CubeObject 主要是为了变色。
-    // 我们可以存 CubeObject*。
+    // Store CubeObject pointers (or indices).
+    // For simplicity we only track whether a block exists; if it does, we look up the CubeObject.
+    // Another option is storing a vector of CubeObject*.
+    // Fastest would be std::vector<CubeObject*> per cell,
+    // but that consumes more memory.
+    // Shooting really just needs the hit position; CubeObject is mainly for recoloring.
+    // We can store CubeObject*.
     
     std::vector<CubeObject*> grid[SIZE_X][SIZE_Y][SIZE_Z];
     
@@ -523,7 +523,7 @@ void FramebufferSizeCallback(GLFWwindow* window, int width, int height)
 void ErrorCallback(int error_code, const char* description)
 {
     // 将错误信息输出到标准错误流，便于问题诊断
-    std::cerr << "[GLFW 错误 #" << error_code << "]: " << description << std::endl;
+    std::cerr << "[GLFW ERROR #" << error_code << "]: " << description << std::endl;
 }
 
 void KeyCallback([[maybe_unused]] GLFWwindow* window, int key, [[maybe_unused]] int scancode, int action, [[maybe_unused]] int mods)
@@ -535,12 +535,12 @@ void KeyCallback([[maybe_unused]] GLFWwindow* window, int key, [[maybe_unused]] 
 
         if (g_isPaused)
         {
-            std::cout << "[系统] 游戏暂停" << std::endl;
+            std::cout << "[System] Game paused" << std::endl;
             std::cout << "----------------------------------------" << std::endl;
-            std::cout << "  [暂停菜单] 设置控制:" << std::endl;
-            std::cout << "  ↑ / ↓ : 调整鼠标灵敏度" << std::endl;
-            std::cout << "  ← / → : 调整视野范围 (FOV)" << std::endl;
-            std::cout << "  ESC   : 返回游戏" << std::endl;
+            std::cout << "  [Pause Menu] Controls:" << std::endl;
+            std::cout << "  ↑ / ↓ : Adjust mouse sensitivity" << std::endl;
+            std::cout << "  ← / → : Adjust field of view (FOV)" << std::endl;
+            std::cout << "  ESC   : Resume game" << std::endl;
             std::cout << "----------------------------------------" << std::endl;
             
             // 暂停时显示鼠标
@@ -549,7 +549,7 @@ void KeyCallback([[maybe_unused]] GLFWwindow* window, int key, [[maybe_unused]] 
         }
         else
         {
-            std::cout << "[系统] 游戏继续" << std::endl;
+            std::cout << "[System] Game resumed" << std::endl;
             // 恢复时隐藏并锁定鼠标
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
             // 重置首次鼠标标志，防止视角跳跃
@@ -563,7 +563,7 @@ void UpdateWindowTitle()
 {
     if (!g_window) return;
     char title[256];
-    sprintf(title, "[已暂停] 设置 - 灵敏度: %.2f (↑↓) | FOV: %.1f (←→)", 
+    sprintf(title, "[Paused] Settings - Sensitivity: %.2f (↑↓) | FOV: %.1f (←→)", 
             g_camera.GetMouseSensitivity(), 
             g_camera.GetFOV());
     glfwSetWindowTitle(g_window, title);
@@ -604,7 +604,7 @@ void WindowCloseCallback([[maybe_unused]] GLFWwindow* window)
 {
     // 用户点击窗口关闭按钮时触发
     g_running = false;
-    std::cout << "[窗口事件] 窗口关闭请求已接收，准备优雅关闭..." << std::endl;
+    std::cout << "[Window Event] Close request received, shutting down gracefully..." << std::endl;
 }
 
 void MouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
@@ -648,7 +648,7 @@ void ProcessShooting()
     invDir.y = (std::abs(ray.direction.y) < 1e-6f) ? 1e20f : 1.0f / ray.direction.y;
     invDir.z = (std::abs(ray.direction.z) < 1e-6f) ? 1e20f : 1.0f / ray.direction.z;
 
-    // std::cout << "[射击] 发射射线! ..." << std::endl; // 移除 I/O 减少卡顿
+    // std::cout << "[Shoot] Cast ray! ..." << std::endl; // Removed I/O to reduce stutter
     g_isShooting = true; 
 
     float closestT = std::numeric_limits<float>::max();
@@ -720,7 +720,7 @@ CheckEnemies:
     }
     else if (hitEnemy)
     {
-        // std::cout << "[射击] 击中敌人! 距离: " << closestT << std::endl;
+        // std::cout << "[Shoot] Hit enemy! Distance: " << closestT << std::endl;
         hitEnemy->TakeDamage(100.0f); 
     }
 
@@ -766,7 +766,7 @@ bool intersectRayAABB(const Ray& ray, const glm::vec3& invDir, const glm::vec3& 
 
 bool InitializeWindow()
 {
-    std::cout << "[初始化] 开始初始化 GLFW 窗口系统..." << std::endl;
+    std::cout << "[Init] Starting GLFW window setup..." << std::endl;
 
     // 1. 设置 GLFW 错误回调，以便在初始化过程中捕获错误信息
     glfwSetErrorCallback(ErrorCallback);
@@ -774,10 +774,10 @@ bool InitializeWindow()
     // 2. 初始化 GLFW 库
     if (!glfwInit())
     {
-        std::cerr << "[错误] GLFW 库初始化失败！" << std::endl;
+        std::cerr << "[Error] Failed to initialize GLFW!" << std::endl;
         return false;
     }
-    std::cout << "[初始化] GLFW 库初始化成功" << std::endl;
+    std::cout << "[Init] GLFW initialized" << std::endl;
 
     // 3. 配置 OpenGL 上下文属性
     // 这些提示必须在 glfwCreateWindow 之前设置
@@ -793,11 +793,11 @@ bool InitializeWindow()
     g_window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE, nullptr, nullptr);
     if (!g_window)
     {
-        std::cerr << "[错误] 窗口创建失败！请检查显卡驱动和 OpenGL 支持" << std::endl;
+        std::cerr << "[Error] Failed to create window! Check GPU driver and OpenGL support" << std::endl;
         glfwTerminate();
         return false;
     }
-    std::cout << "[初始化] 窗口创建成功 (" << WINDOW_WIDTH << "x" << WINDOW_HEIGHT << ")" << std::endl;
+    std::cout << "[Init] Window created (" << WINDOW_WIDTH << "x" << WINDOW_HEIGHT << ")" << std::endl;
 
     // 5. 将 OpenGL 上下文绑定到当前线程
     // 必须在调用任何 OpenGL 函数之前执行
@@ -817,7 +817,7 @@ bool InitializeWindow()
 
     // 8. 隐藏鼠标光标并锁定在窗口中心（第一人称视角模式）
     glfwSetInputMode(g_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    std::cout << "[初始化] 鼠标光标已隐藏并锁定" << std::endl;
+    std::cout << "[Init] Mouse cursor hidden and locked" << std::endl;
 
     // 9. 设置摄像机参数
     g_camera.SetMovementSpeed(5.0f); // 稍微快一点
@@ -827,24 +827,24 @@ bool InitializeWindow()
     g_camera.SetMouseSensitivity(settings.sensitivity);
     g_camera.SetFOV(settings.fov);
     
-    std::cout << "[初始化] 摄像机参数已设置" << std::endl;
+    std::cout << "[Init] Camera parameters configured" << std::endl;
 
-    std::cout << "[初始化] GLFW 窗口初始化完成" << std::endl;
+    std::cout << "[Init] GLFW window initialization completed" << std::endl;
     return true;
 }
 
 bool InitializeGLAD()
 {
-    std::cout << "[初始化] 开始加载 OpenGL 函数指针..." << std::endl;
+    std::cout << "[Init] Loading OpenGL function pointers..." << std::endl;
 
     // 1. GLAD 函数加载
     // 必须在 glfwMakeContextCurrent 之后调用
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
-        std::cerr << "[错误] GLAD 无法加载 OpenGL 函数指针！" << std::endl;
+        std::cerr << "[Error] GLAD failed to load OpenGL function pointers!" << std::endl;
         return false;
     }
-    std::cout << "[初始化] OpenGL 函数指针加载成功" << std::endl;
+    std::cout << "[Init] OpenGL function pointers loaded" << std::endl;
 
     // 2. 输出 OpenGL 版本信息
     const GLubyte* vendor = glGetString(GL_VENDOR);      // 显卡厂商 (e.g., NVIDIA, AMD, Intel)
@@ -852,10 +852,10 @@ bool InitializeGLAD()
     const GLubyte* version = glGetString(GL_VERSION);    // OpenGL 版本
     const GLubyte* glsl_version = glGetString(GL_SHADING_LANGUAGE_VERSION);  // GLSL 版本
 
-    std::cout << "[GPU 信息] 显卡厂商: " << (const char*)vendor << std::endl;
-    std::cout << "[GPU 信息] 显卡型号: " << (const char*)renderer << std::endl;
-    std::cout << "[GPU 信息] OpenGL 版本: " << (const char*)version << std::endl;
-    std::cout << "[GPU 信息] GLSL 版本: " << (const char*)glsl_version << std::endl;
+    std::cout << "[GPU Info] Vendor: " << (const char*)vendor << std::endl;
+    std::cout << "[GPU Info] Renderer: " << (const char*)renderer << std::endl;
+    std::cout << "[GPU Info] OpenGL Version: " << (const char*)version << std::endl;
+    std::cout << "[GPU Info] GLSL Version: " << (const char*)glsl_version << std::endl;
 
     // 3. 验证最小版本要求 (OpenGL 3.3+)
     GLint major_version, minor_version;
@@ -864,7 +864,7 @@ bool InitializeGLAD()
     
     if (major_version < 3 || (major_version == 3 && minor_version < 3))
     {
-        std::cerr << "[错误] 显卡不支持 OpenGL 3.3 及以上版本！当前版本: " 
+        std::cerr << "[Error] GPU does not support OpenGL 3.3+. Current version: " 
                   << major_version << "." << minor_version << std::endl;
         return false;
     }
@@ -873,13 +873,13 @@ bool InitializeGLAD()
     glEnable(GL_MULTISAMPLE);  // 启用多重采样抗锯齿
     glEnable(GL_DEPTH_TEST);   // 启用深度测试
 
-    std::cout << "[初始化] GLAD 初始化完成" << std::endl;
+    std::cout << "[Init] GLAD initialization complete" << std::endl;
     return true;
 }
 
 bool InitializeScene()
 {
-    std::cout << "[初始化] 开始构建场景..." << std::endl;
+    std::cout << "[Init] Building scene..." << std::endl;
 
     // 1. 加载着色器
     g_shader = new Shader("shaders/phong.vert", "shaders/phong.frag");
@@ -1021,7 +1021,7 @@ bool InitializeScene()
         g_spatialGrid.Add(&cube);
     }
     
-    std::cout << "[初始化] 地形生成完成，方块数量: " << instancePositions.size() << std::endl;
+    std::cout << "[Init] Terrain generated. Block count: " << instancePositions.size() << std::endl;
 
     // 4. 调整摄像机高度以防出生在地底
     // 寻找 (0,0) 附近的最高点
@@ -1033,7 +1033,7 @@ bool InitializeScene()
     }
     // 设置摄像机位置 (在最高点上方 2.0f)
     g_camera.SetPosition(glm::vec3(0.0f, spawnY + 2.0f, 0.0f));
-    std::cout << "[初始化] 修正出生点高度: " << spawnY + 2.0f << std::endl;
+    std::cout << "[Init] Adjusted spawn height: " << spawnY + 2.0f << std::endl;
 
     // 初始化准星
     g_crosshairShader = new Shader("shaders/crosshair.vert", "shaders/crosshair.frag");
@@ -1089,7 +1089,7 @@ bool InitializeScene()
     g_enemyPool = new EnemyPool(100); // 初始池大小 100
     g_director = new AIDirector(g_enemyPool);
 
-    std::cout << "[初始化] 场景构建完成" << std::endl;
+    std::cout << "[Init] Scene build complete" << std::endl;
     return true;
 }
 
@@ -1101,7 +1101,7 @@ bool InitializeScene()
 
 void Cleanup()
 {
-    std::cout << "[清理] 开始释放系统资源..." << std::endl;
+    std::cout << "[Cleanup] Releasing system resources..." << std::endl;
 
     delete g_shader;
     delete g_instancedShader;
@@ -1129,12 +1129,12 @@ void Cleanup()
     if (g_window)
     {
         glfwDestroyWindow(g_window);
-        std::cout << "[清理] 窗口对象已销毁" << std::endl;
+        std::cout << "[Cleanup] Window destroyed" << std::endl;
     }
 
     glfwTerminate();
-    std::cout << "[清理] GLFW 库已关闭" << std::endl;
-    std::cout << "[清理] 资源清理完成，应用程序退出" << std::endl;
+    std::cout << "[Cleanup] GLFW terminated" << std::endl;
+    std::cout << "[Cleanup] Cleanup finished. Exiting application" << std::endl;
 }
 
 // ============================================================================
@@ -1143,8 +1143,8 @@ void Cleanup()
 
 void RenderLoop()
 {
-    std::cout << "[循环] 进入主渲染循环..." << std::endl;
-    std::cout << "[提示] 使用 WASD 键移动摄像机，鼠标移动控制视角，ESC 退出" << std::endl;
+    std::cout << "[Loop] Entering main render loop..." << std::endl;
+    std::cout << "[Tip] Use WASD to move, mouse to look, ESC to exit" << std::endl;
 
     // 主事件循环：处理窗口事件、更新逻辑、渲染画面
     while (g_running && !glfwWindowShouldClose(g_window))
@@ -1367,21 +1367,20 @@ void RenderLoop()
             g_shader->setVec3("uMaterial_Specular", glm::vec3(0.8f, 0.8f, 0.8f));
             g_shader->setFloat("uMaterial_Shininess", 64.0f);
 
-            // 这里的 uCameraPos 其实不重要了，因为我们在 View Space 渲染，Camera 就在 (0,0,0)
-            // 但 Shader 里计算 specular 用到了 uCameraPos，为了光照正确，
-            // 当 model/view 都是 view space 时，uCameraPos 应该是 (0,0,0)
-            // 不过我们的 shader 是 world space 的... 这是一个小 hack
-            // 简单起见，我们假设武器也接受来自 world 的光（但这会很奇怪，因为武器随相机动）
-            // 更好的做法是有独立的 UI/Weapon Shader。
-            // 暂时忽略光照的完美性，直接绘制。
+            // uCameraPos is not important here because we render in view space and the camera sits at (0,0,0).
+            // The shader uses uCameraPos for specular highlights, so when model/view are in view space,
+            // uCameraPos should also be (0,0,0).
+            // Our shader operates in world space, so this is a small hack.
+            // To keep it simple we assume the weapon still uses world lighting even though it moves with the camera.
+            // A dedicated UI/Weapon shader would be better; for now we just draw and accept imperfect lighting.
             g_shader->setVec3("uCameraPos", glm::vec3(0.0f)); // 在 View Space，相机在原点
 
-            // 还需要把光源位置转换到 View Space 吗？
-            // 我们的 Shader 计算是在 World Space 进行的。
-            // 当我们把 uView 设为 Identity 时，意味着我们把 "World Space" 当作了 "View Space" 用。
-            // 所以 uModel 的坐标就是最终顶点的坐标（在 View Space）。
-            // 这样光照计算会错乱，因为 uLight_Position 还是 World Space 的。
-            // 但作为一个简单的 demo，只要能看见枪就行。
+            // Should we convert the light position into view space?
+            // The shader calculations are in world space.
+            // When uView is identity we effectively treat world space as view space,
+            // so uModel coordinates become the final vertex coordinates (in view space).
+            // That makes lighting inconsistent because uLight_Position remains in world space.
+            // Good enough for a simple demo as long as the weapon is visible.
             
             g_cubeMesh->draw();
         }
@@ -1557,7 +1556,7 @@ void RenderLoop()
         glfwSwapBuffers(g_window);
     }
 
-    std::cout << "[循环] 已退出主渲染循环" << std::endl;
+    std::cout << "[Loop] Exited main render loop" << std::endl;
 }
 
 // ============================================================================
@@ -1572,8 +1571,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 #endif
 
     std::cout << "===========================================================" << std::endl;
-    std::cout << "  OpenGL 基础渲染框架启动" << std::endl;
-    std::cout << "  标准: C++17 | 显示版本: OpenGL 4.6 Core" << std::endl;
+    std::cout << "  OpenGL baseline renderer starting" << std::endl;
+    std::cout << "  Standard: C++17 | Display: OpenGL 4.6 Core" << std::endl;
     std::cout << "===========================================================" << std::endl;
 
     // -------- 初始化阶段 --------
@@ -1582,7 +1581,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         // 初始化 GLFW 并创建窗口
         if (!InitializeWindow())
         {
-            std::cerr << "[致命错误] GLFW 窗口初始化失败！" << std::endl;
+            std::cerr << "[Fatal] Failed to initialize GLFW window!" << std::endl;
             Cleanup();
             return EXIT_FAILURE;
         }
@@ -1590,7 +1589,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         // 初始化 GLAD 并加载 OpenGL 函数指针
         if (!InitializeGLAD())
         {
-            std::cerr << "[致命错误] GLAD 初始化失败！" << std::endl;
+            std::cerr << "[Fatal] GLAD initialization failed!" << std::endl;
             Cleanup();
             return EXIT_FAILURE;
         }
@@ -1598,14 +1597,14 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         // 初始化场景
         if (!InitializeScene())
         {
-            std::cerr << "[致命错误] 场景初始化失败！" << std::endl;
+            std::cerr << "[Fatal] Scene initialization failed!" << std::endl;
             Cleanup();
             return EXIT_FAILURE;
         }
     }
     catch (const std::exception& e)
     {
-        std::cerr << "[异常] 初始化过程中发生未预期的错误: " << e.what() << std::endl;
+        std::cerr << "[Exception] Unexpected error during initialization: " << e.what() << std::endl;
         Cleanup();
         return EXIT_FAILURE;
     }
@@ -1617,7 +1616,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     Cleanup();
 
     std::cout << "===========================================================" << std::endl;
-    std::cout << "  应用程序正常退出" << std::endl;
+    std::cout << "  Application exited normally" << std::endl;
     std::cout << "===========================================================" << std::endl;
 
     return EXIT_SUCCESS;
