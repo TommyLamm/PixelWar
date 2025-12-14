@@ -1,10 +1,8 @@
 # OpenGL Base Rendering Framework
 
-A from-scratch OpenGL rendering framework built with C++, GLFW, and GLAD. It serves as a baseline for building a Left 4 Dead 2–style FPS sandbox with procedural terrain and basic combat systems.
+A from-scratch OpenGL rendering framework built with C++, GLFW, and GLAD. It serves as a baseline for building a FPS sandbox with procedural terrain and basic combat systems.
 
 ## Features
-- 1280x720 window creation (runtime uses fixed 16:9 at 1600x900)
-- Game loop with dark gray clear color (0.2, 0.2, 0.2)
 - ESC key quits or toggles the pause menu
 - Pause menu exposes sensitivity/FOV sliders; values persist to `settings.ini`
 - FPS camera with gravity, jump, and AABB collision/slide
