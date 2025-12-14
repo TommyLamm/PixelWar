@@ -4,7 +4,7 @@
 struct GameSettings
 {
     float sensitivity = 0.1f;
-    float fov = 103.0f;
+    float fov = 71.0f;
 };
 
 class Settings
