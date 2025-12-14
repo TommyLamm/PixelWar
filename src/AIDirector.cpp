@@ -2,6 +2,7 @@
 #include <glm/glm.hpp>
 #include <random>
 #include <iostream>
+#include <cmath>
 
 AIDirector::AIDirector(EnemyPool* enemyPool)
     : m_enemyPool(enemyPool),
@@ -16,7 +17,7 @@ AIDirector::AIDirector(EnemyPool* enemyPool)
 {
 }
 
-void AIDirector::Update(float deltaTime, bool playerIsShooting) {
+void AIDirector::Update(float deltaTime, bool playerIsShooting, const glm::vec3& playerPos, float viewDistance) {
     UpdateTension(playerIsShooting);
     
     m_stateTimer += deltaTime;
@@ -35,7 +36,7 @@ void AIDirector::Update(float deltaTime, bool playerIsShooting) {
             
             // 偶尔生成零星敌人 (每 3 秒 1 个)
             if (m_spawnTimer > 3.0f && currentCount < 5) {
-                SpawnWave(1);
+                SpawnWave(1, playerPos, viewDistance);
                 m_spawnTimer = 0.0f;
             }
             break;
@@ -47,7 +48,7 @@ void AIDirector::Update(float deltaTime, bool playerIsShooting) {
                 m_directorState = DirectorState::Horde;
                 std::cout << "[AI Director] ⚠️ Horde incoming! ⚠️" << std::endl;
             } else if (m_spawnTimer > 1.5f && currentCount < 10) {
-                SpawnWave(2);
+                SpawnWave(2, playerPos, viewDistance);
                 m_spawnTimer = 0.0f;
             }
             break;
@@ -57,7 +58,7 @@ void AIDirector::Update(float deltaTime, bool playerIsShooting) {
             
             // 快速生成敌人
             if (m_spawnTimer > 0.2f && m_hordeEnemiesSpawned < m_hordeTarget) {
-                SpawnWave(1);
+                SpawnWave(1, playerPos, viewDistance);
                 m_hordeEnemiesSpawned++;
                 m_spawnTimer = 0.0f;
             }
@@ -92,29 +93,24 @@ void AIDirector::TriggerHorde(int enemyCount) {
     m_hordeDuration = 0.0f;
 }
 
-void AIDirector::SpawnWave(int count) {
+void AIDirector::SpawnWave(int count, const glm::vec3& playerPos, float viewDistance) {
     for (int i = 0; i < count; ++i) {
-        glm::vec3 spawnPos = GetRandomSpawnPosition();
+        glm::vec3 spawnPos = GetRandomSpawnPosition(playerPos, viewDistance);
         m_enemyPool->Acquire(spawnPos);
     }
 }
 
-glm::vec3 AIDirector::GetRandomSpawnPosition() {
+glm::vec3 AIDirector::GetRandomSpawnPosition(const glm::vec3& playerPos, float viewDistance) {
     static std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<int> distSide(0, 3);
-    std::uniform_real_distribution<float> distCoord(-20.0f, 20.0f); // 稍微扩大生成范围
-    
-    int side = distSide(rng);
-    glm::vec3 pos(0.0f); // 初始化，防止警告
+    std::uniform_real_distribution<float> distRadius(viewDistance * 0.35f, viewDistance * 0.85f);
+    std::uniform_real_distribution<float> distAngle(0.0f, 6.2831853f);
 
-    // 在 20x20 区域边缘生成
-    switch (side)
-    {
-    case 0: pos = glm::vec3(distCoord(rng), 0.9f, -20.0f); break;
-    case 1: pos = glm::vec3(distCoord(rng), 0.9f, 20.0f); break;
-    case 2: pos = glm::vec3(-20.0f, 0.9f, distCoord(rng)); break;
-    case 3: pos = glm::vec3(20.0f, 0.9f, distCoord(rng)); break;
-    }
-    
+    float r = distRadius(rng);
+    float a = distAngle(rng);
+
+    glm::vec3 pos(0.0f);
+    pos.x = playerPos.x + std::cos(a) * r;
+    pos.z = playerPos.z + std::sin(a) * r;
+    pos.y = playerPos.y; // 让重力自动贴地
     return pos;
 }

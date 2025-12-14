@@ -35,6 +35,7 @@ void EnemyPool::Release(Enemy* enemy) {
         m_activeEnemies.erase(it);
     }
     
+    enemy->DeactivateForPool();
     m_inactivePool.push(enemy);
 }
 
@@ -67,6 +68,7 @@ void EnemyPool::RecycleDeadEnemies() {
             // 注意：这里我们不能直接调用 Release，因为这会导致迭代器失效问题
             // 所以我们手动做 Release 的逻辑
             Enemy* enemy = *it;
+            enemy->DeactivateForPool();
             m_inactivePool.push(enemy);
             
             // 使用 erase 返回下一个迭代器

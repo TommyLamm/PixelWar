@@ -26,6 +26,7 @@ public:
     
     // 立即杀死 (用于测试或清理)
     void Kill();
+    void DeactivateForPool();
     
     // Getters
     EnemyState GetState() const { return m_state; }

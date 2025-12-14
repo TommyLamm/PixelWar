@@ -49,6 +49,13 @@
 #include <cstddef>
 #include <filesystem>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <queue>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
+#include <cstdio>
 
 // ------------------------- Perlin Noise 2D ----------------------------------
 struct Perlin2D {
@@ -189,6 +196,16 @@ inline glm::vec3 getBlockColor(BlockType t)
     }
 }
 
+// 全局地形生成器配置
+constexpr int CHUNK_SIZE = 16;
+constexpr int VIEW_DISTANCE_CHUNKS = 4; // 视距按区块数量限制，平衡性能
+constexpr float VIEW_DISTANCE_WORLD = static_cast<float>(CHUNK_SIZE * VIEW_DISTANCE_CHUNKS);
+constexpr int CHUNK_MERGE_PER_FRAME = 1;
+constexpr int CHUNK_REBUILD_BATCH = 8;
+constexpr float CHUNK_REBUILD_INTERVAL = 0.3f;
+Perlin2D g_perlin(12345);
+TerrainParams g_terrainParams;
+
 // ============================================================================
 // 配置常量定义
 // ============================================================================
@@ -298,54 +315,78 @@ struct CubeObject
     }
 };
 
-// 简单的空间网格 (Spatial Grid) 用于加速射线检测
-// 地图范围 64 -> -64 到 +63
-// x, z 偏移 +64 -> 索引 0 到 127
-// y 范围 -10 到 30+ -> 偏移 +10 -> 索引 0 到 64 足够
-struct SpatialGrid {
-    static const int SIZE_X = 128;
-    static const int SIZE_Y = 64;
-    static const int SIZE_Z = 128;
-    
-    // Store CubeObject pointers (or indices).
-    // For simplicity we only track whether a block exists; if it does, we look up the CubeObject.
-    // Another option is storing a vector of CubeObject*.
-    // Fastest would be std::vector<CubeObject*> per cell,
-    // but that consumes more memory.
-    // Shooting really just needs the hit position; CubeObject is mainly for recoloring.
-    // We can store CubeObject*.
-    
-    std::vector<CubeObject*> grid[SIZE_X][SIZE_Y][SIZE_Z];
-    
-    void Clear() {
-        for(int x=0; x<SIZE_X; ++x)
-            for(int y=0; y<SIZE_Y; ++y)
-                for(int z=0; z<SIZE_Z; ++z)
-                    grid[x][y][z].clear();
+// 动态哈希空间网格，支持无限地图
+struct Int3 {
+    int x, y, z;
+    bool operator==(const Int3& other) const {
+        return x == other.x && y == other.y && z == other.z;
     }
-    
+};
+
+struct Int3Hash {
+    std::size_t operator()(const Int3& v) const noexcept {
+        std::size_t h1 = std::hash<int>()(v.x);
+        std::size_t h2 = std::hash<int>()(v.y);
+        std::size_t h3 = std::hash<int>()(v.z);
+        return h1 ^ (h2 << 1) ^ (h3 << 2);
+    }
+};
+
+struct SpatialHash {
+    std::unordered_map<Int3, std::vector<CubeObject*>, Int3Hash> cells;
+
+    void Clear() { cells.clear(); }
+
     void Add(CubeObject* cube) {
-        int ix = (int)std::floor(cube->position.x) + 64;
-        int iy = (int)std::floor(cube->position.y) + 10;
-        int iz = (int)std::floor(cube->position.z) + 64;
-        
-        if (ix >= 0 && ix < SIZE_X && iy >= 0 && iy < SIZE_Y && iz >= 0 && iz < SIZE_Z) {
-            grid[ix][iy][iz].push_back(cube);
-        }
+        Int3 key{ (int)std::floor(cube->position.x), (int)std::floor(cube->position.y), (int)std::floor(cube->position.z) };
+        cells[key].push_back(cube);
     }
-    
+
     std::vector<CubeObject*>* Get(int x, int y, int z) {
-        int ix = x + 64;
-        int iy = y + 10;
-        int iz = z + 64;
-        if (ix >= 0 && ix < SIZE_X && iy >= 0 && iy < SIZE_Y && iz >= 0 && iz < SIZE_Z) {
-            return &grid[ix][iy][iz];
-        }
+        Int3 key{ x, y, z };
+        auto it = cells.find(key);
+        if (it != cells.end()) return &it->second;
         return nullptr;
     }
 };
 
-SpatialGrid g_spatialGrid;
+struct ChunkKey {
+    int x;
+    int z;
+    bool operator==(const ChunkKey& other) const noexcept {
+        return x == other.x && z == other.z;
+    }
+};
+
+struct ChunkKeyHash {
+    std::size_t operator()(const ChunkKey& k) const noexcept {
+        std::size_t h1 = std::hash<int>()(k.x);
+        std::size_t h2 = std::hash<int>()(k.z);
+        return h1 ^ (h2 << 1);
+    }
+};
+
+struct ChunkData {
+    std::vector<glm::vec3> positions;
+    std::vector<glm::vec3> colors;
+    std::vector<CubeObject> cubes;
+};
+
+SpatialHash g_spatialHash;
+std::unordered_map<ChunkKey, ChunkData, ChunkKeyHash> g_loadedChunks;
+size_t g_visibleInstanceCount = 0;
+
+// 区块异步加载
+std::thread g_chunkThread;
+std::mutex g_chunkMutex;
+std::condition_variable g_chunkCV;
+std::queue<ChunkKey> g_chunkRequestQueue;
+std::queue<std::pair<ChunkKey, ChunkData>> g_chunkReadyQueue;
+std::unordered_set<ChunkKey, ChunkKeyHash> g_chunkLoading;
+bool g_chunkThreadExit = false;
+bool g_chunkThreadStarted = false;
+int g_pendingMergedChunks = 0;
+float g_rebuildTimer = 0.0f;
 
 // 游戏对象结构体 (Removed from here)
 // struct CubeObject ... 
@@ -378,6 +419,15 @@ float g_lastFrame = 0.0f;               // 上一帧的时间
 // ============================================================================
 
 void FramebufferSizeCallback(GLFWwindow* window, int width, int height);
+ChunkKey WorldToChunk(const glm::vec3& pos);
+ChunkData GenerateChunk(const ChunkKey& key);
+void RebuildVisibleTerrain();
+void UpdateVisibleChunks(const glm::vec3& playerPos, bool force = false);
+float SampleTerrainHeight(int x, int z);
+glm::vec3 GetRandomPointInView(const glm::vec3& center, float minRadius, float maxRadius);
+void EnforceEnemyViewDistance(const glm::vec3& playerPos);
+void ChunkLoaderThread();
+int ProcessReadyChunks(const std::unordered_set<ChunkKey, ChunkKeyHash>& needed, int maxPerFrame = CHUNK_MERGE_PER_FRAME);
 
 /**
  * @brief 初始化 GLFW 库和创建渲染窗口
@@ -521,7 +571,7 @@ void PlaySfxKill();
 // 回调函数实现
 // ============================================================================
 
-void FramebufferSizeCallback(GLFWwindow* window, int width, int height)
+void FramebufferSizeCallback([[maybe_unused]] GLFWwindow* window, int width, int height)
 {
     // 自适应窗口大小，直接使用当前宽高
     g_windowWidth = std::max(1, width);
@@ -664,10 +714,10 @@ void UpdateWindowTitle()
     if (!g_window) return;
     char title[256];
     const char* resLabel = g_resolutionLabel.c_str();
-    sprintf(title, "[Paused] Settings - Sensitivity: %.2f (↑↓) | FOV: %.1f (←→) | Res: %s", 
-            g_camera.GetMouseSensitivity(), 
-            g_camera.GetFOV(),
-            resLabel);
+    snprintf(title, sizeof(title), "[Paused] Settings - Sensitivity: %.2f (↑↓) | FOV: %.1f (←→) | Res: %s", 
+             g_camera.GetMouseSensitivity(), 
+             g_camera.GetFOV(),
+             resLabel);
     glfwSetWindowTitle(g_window, title);
 }
 
@@ -709,7 +759,7 @@ void WindowCloseCallback([[maybe_unused]] GLFWwindow* window)
     std::cout << "[Window Event] Close request received, shutting down gracefully..." << std::endl;
 }
 
-void MouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
+void MouseButtonCallback([[maybe_unused]] GLFWwindow* window, [[maybe_unused]] int button, [[maybe_unused]] int action, [[maybe_unused]] int mods)
 {
     // 暂停时不处理射击
     if (g_isPaused) return;
@@ -770,7 +820,7 @@ void ProcessShooting()
         int y = (int)std::floor(samplePos.y);
         int z = (int)std::floor(samplePos.z);
         
-        auto* cell = g_spatialGrid.Get(x, y, z);
+        auto* cell = g_spatialHash.Get(x, y, z);
         if (cell && !cell->empty()) {
             // 这个格子有方块，详细检测 AABB
             for (auto* cube : *cell) {
@@ -862,6 +912,284 @@ bool intersectRayAABB(const Ray& ray, const glm::vec3& invDir, const glm::vec3& 
     
     t = tNear;
     return true;
+}
+
+ChunkKey WorldToChunk(const glm::vec3& pos)
+{
+    int cx = static_cast<int>(std::floor(pos.x / static_cast<float>(CHUNK_SIZE)));
+    int cz = static_cast<int>(std::floor(pos.z / static_cast<float>(CHUNK_SIZE)));
+    return { cx, cz };
+}
+
+float SampleTerrainHeight(int x, int z)
+{
+    return terrainHeight(g_perlin, g_terrainParams, x, z);
+}
+
+ChunkData GenerateChunk(const ChunkKey& key)
+{
+    ChunkData chunk;
+    chunk.positions.reserve(CHUNK_SIZE * CHUNK_SIZE * 6);
+    chunk.colors.reserve(CHUNK_SIZE * CHUNK_SIZE * 6);
+    chunk.cubes.reserve(CHUNK_SIZE * CHUNK_SIZE * 6);
+
+    std::mt19937 rng(static_cast<std::uint32_t>((key.x * 73856093) ^ (key.z * 19349663) ^ 12345));
+
+    for (int lx = 0; lx < CHUNK_SIZE; ++lx) {
+        for (int lz = 0; lz < CHUNK_SIZE; ++lz) {
+            int worldX = key.x * CHUNK_SIZE + lx;
+            int worldZ = key.z * CHUNK_SIZE + lz;
+
+            float h = SampleTerrainHeight(worldX, worldZ);
+            int height = static_cast<int>(std::floor(h));
+
+            // 只生成地表与水面，减少实例数量
+            BlockType surfaceType = BlockType::Grass;
+            if (height < g_terrainParams.waterLevel) surfaceType = BlockType::Sand;
+            else if (height < g_terrainParams.waterLevel + g_terrainParams.beachHeight) surfaceType = BlockType::Sand;
+            else if (height > g_terrainParams.snowHeight) surfaceType = BlockType::Snow;
+            else surfaceType = BlockType::Grass;
+
+            glm::vec3 surfacePos(static_cast<float>(worldX), static_cast<float>(height), static_cast<float>(worldZ));
+            glm::vec3 surfaceColor = getBlockColor(surfaceType);
+
+            auto addBlock = [&](const glm::vec3& pos, const glm::vec3& color) {
+                chunk.positions.push_back(pos);
+                chunk.colors.push_back(color);
+                CubeObject cube;
+                cube.position = pos;
+                cube.scale = glm::vec3(1.0f);
+                cube.color = color;
+                chunk.cubes.push_back(cube);
+            };
+
+            addBlock(surfacePos, surfaceColor);
+
+            // 水面（仅一层水面，进一步减少数据）
+            if (height < g_terrainParams.waterLevel) {
+                glm::vec3 waterPos(static_cast<float>(worldX), g_terrainParams.waterLevel, static_cast<float>(worldZ));
+                addBlock(waterPos, getBlockColor(BlockType::Water));
+            }
+
+            // 树木仅在草地表面生成
+            if (surfaceType == BlockType::Grass) {
+                float randVal = static_cast<float>(rng() % 1000) / 1000.0f;
+                if (randVal > g_terrainParams.treeThreshold) {
+                    int treeHeight = 4 + static_cast<int>(rng() % 3);
+                    for (int th = 1; th <= treeHeight; ++th) {
+                        glm::vec3 tPos = surfacePos + glm::vec3(0.0f, static_cast<float>(th), 0.0f);
+                        glm::vec3 tColor = getBlockColor(BlockType::Wood);
+                        addBlock(tPos, tColor);
+                    }
+                    for (int lx2 = -1; lx2 <= 1; ++lx2) {
+                        for (int lz2 = -1; lz2 <= 1; ++lz2) {
+                            for (int ly2 = 0; ly2 <= 1; ++ly2) {
+                                if (lx2 == 0 && lz2 == 0 && ly2 == 0) continue;
+                                glm::vec3 lPos = surfacePos + glm::vec3(static_cast<float>(lx2), static_cast<float>(treeHeight + ly2), static_cast<float>(lz2));
+                                glm::vec3 lColor = getBlockColor(BlockType::Leaves);
+                                addBlock(lPos, lColor);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return chunk;
+}
+
+void RebuildVisibleTerrain()
+{
+    size_t totalBlocks = 0;
+    for (const auto& kv : g_loadedChunks) totalBlocks += kv.second.positions.size();
+
+    std::vector<glm::vec3> instancePositions;
+    std::vector<glm::vec3> instanceColors;
+    instancePositions.reserve(totalBlocks);
+    instanceColors.reserve(totalBlocks);
+
+    g_cubes.clear();
+    g_terrainPositions.clear();
+    g_cubes.reserve(totalBlocks);
+    g_terrainPositions.reserve(totalBlocks);
+    g_spatialHash.Clear();
+
+    for (auto& kv : g_loadedChunks) {
+        auto& chunk = kv.second;
+        instancePositions.insert(instancePositions.end(), chunk.positions.begin(), chunk.positions.end());
+        instanceColors.insert(instanceColors.end(), chunk.colors.begin(), chunk.colors.end());
+        for (auto& cube : chunk.cubes) {
+            g_cubes.push_back(cube);
+            g_terrainPositions.push_back(cube.position);
+        }
+    }
+
+    for (auto& cube : g_cubes) {
+        g_spatialHash.Add(&cube);
+    }
+
+    g_visibleInstanceCount = instancePositions.size();
+    if (g_terrainMesh) {
+        g_terrainMesh->updateInstanceData(instancePositions, instanceColors);
+    }
+}
+
+void UpdateVisibleChunks(const glm::vec3& playerPos, bool force)
+{
+    ChunkKey center = WorldToChunk(playerPos);
+    std::unordered_set<ChunkKey, ChunkKeyHash> needed;
+    for (int dz = -VIEW_DISTANCE_CHUNKS; dz <= VIEW_DISTANCE_CHUNKS; ++dz) {
+        for (int dx = -VIEW_DISTANCE_CHUNKS; dx <= VIEW_DISTANCE_CHUNKS; ++dx) {
+            needed.insert({ center.x + dx, center.z + dz });
+        }
+    }
+
+    bool removed = force;
+
+    for (auto it = g_loadedChunks.begin(); it != g_loadedChunks.end();) {
+        if (needed.find(it->first) == needed.end()) {
+            it = g_loadedChunks.erase(it);
+            removed = true;
+        } else {
+            ++it;
+        }
+    }
+
+    // 仅把缺失区块放入异步队列，按前方优先排序
+    std::vector<ChunkKey> toRequest;
+    glm::vec3 front = g_camera.GetFront();
+    glm::vec3 playerPosFlat = glm::vec3(playerPos.x, 0.0f, playerPos.z);
+    for (const auto& key : needed) {
+        if (g_loadedChunks.find(key) != g_loadedChunks.end()) continue;
+        if (g_chunkLoading.find(key) != g_chunkLoading.end()) continue;
+        toRequest.push_back(key);
+    }
+
+    std::sort(toRequest.begin(), toRequest.end(), [&](const ChunkKey& a, const ChunkKey& b) {
+        glm::vec3 centerA(a.x * CHUNK_SIZE + CHUNK_SIZE * 0.5f, 0.0f, a.z * CHUNK_SIZE + CHUNK_SIZE * 0.5f);
+        glm::vec3 centerB(b.x * CHUNK_SIZE + CHUNK_SIZE * 0.5f, 0.0f, b.z * CHUNK_SIZE + CHUNK_SIZE * 0.5f);
+        glm::vec3 dirA = glm::normalize(centerA - playerPosFlat);
+        glm::vec3 dirB = glm::normalize(centerB - playerPosFlat);
+        float scoreA = glm::dot(dirA, glm::normalize(glm::vec3(front.x, 0.0f, front.z)));
+        float scoreB = glm::dot(dirB, glm::normalize(glm::vec3(front.x, 0.0f, front.z)));
+        // 更靠前优先，其次按距离近
+        if (std::abs(scoreA - scoreB) > 0.01f) return scoreA > scoreB;
+        float distA = glm::length(centerA - playerPosFlat);
+        float distB = glm::length(centerB - playerPosFlat);
+        return distA < distB;
+    });
+
+    {
+        std::lock_guard<std::mutex> lk(g_chunkMutex);
+        for (const auto& key : toRequest) {
+            if (g_loadedChunks.find(key) != g_loadedChunks.end()) continue;
+            if (g_chunkLoading.find(key) != g_chunkLoading.end()) continue;
+            g_chunkLoading.insert(key);
+            g_chunkRequestQueue.push(key);
+        }
+    }
+    if (!toRequest.empty()) g_chunkCV.notify_one();
+
+    // 处理已完成的区块，限制每帧合并数量
+    int merged = ProcessReadyChunks(needed, CHUNK_MERGE_PER_FRAME);
+    if (merged > 0) g_pendingMergedChunks += merged;
+
+    // 控制重建频率，避免每合并就全量重建
+    g_rebuildTimer += g_deltaTime;
+    bool needRebuild = false;
+    if (removed || force) needRebuild = true;
+    else if (g_pendingMergedChunks >= CHUNK_REBUILD_BATCH) needRebuild = true;
+    else if (g_pendingMergedChunks > 0 && g_rebuildTimer >= CHUNK_REBUILD_INTERVAL) needRebuild = true;
+
+    if (needRebuild) {
+        RebuildVisibleTerrain();
+        g_pendingMergedChunks = 0;
+        g_rebuildTimer = 0.0f;
+    }
+}
+
+glm::vec3 GetRandomPointInView(const glm::vec3& center, float minRadius, float maxRadius)
+{
+    static std::mt19937 rng(std::random_device{}());
+    std::uniform_real_distribution<float> radius(minRadius, maxRadius);
+    std::uniform_real_distribution<float> angle(0.0f, 6.2831853f);
+
+    float r = radius(rng);
+    float a = angle(rng);
+
+    float x = center.x + std::cos(a) * r;
+    float z = center.z + std::sin(a) * r;
+    float y = SampleTerrainHeight(static_cast<int>(std::round(x)), static_cast<int>(std::round(z))) + 2.0f;
+    return glm::vec3(x, y, z);
+}
+
+void EnforceEnemyViewDistance(const glm::vec3& playerPos)
+{
+    if (!g_enemyPool) return;
+
+    const float maxDist = VIEW_DISTANCE_WORLD;
+    std::vector<Enemy*> toCull;
+    const auto& activeEnemies = g_enemyPool->GetActiveEnemies();
+    for (auto enemy : activeEnemies) {
+        if (!enemy->IsActive()) continue;
+        if (glm::distance(playerPos, enemy->GetPosition()) > maxDist) {
+            toCull.push_back(enemy);
+        }
+    }
+
+    for (auto enemy : toCull) {
+        g_enemyPool->Release(enemy);
+    }
+
+    for (size_t i = 0; i < toCull.size(); ++i) {
+        glm::vec3 spawnPos = GetRandomPointInView(playerPos, VIEW_DISTANCE_WORLD * 0.3f, VIEW_DISTANCE_WORLD * 0.8f);
+        g_enemyPool->Acquire(spawnPos);
+    }
+}
+
+void ChunkLoaderThread()
+{
+    while (true) {
+        ChunkKey key;
+        {
+            std::unique_lock<std::mutex> lk(g_chunkMutex);
+            g_chunkCV.wait(lk, [] { return g_chunkThreadExit || !g_chunkRequestQueue.empty(); });
+            if (g_chunkThreadExit) break;
+            key = g_chunkRequestQueue.front();
+            g_chunkRequestQueue.pop();
+        }
+
+        ChunkData data = GenerateChunk(key);
+
+        {
+            std::lock_guard<std::mutex> lk(g_chunkMutex);
+            g_chunkReadyQueue.push({ key, std::move(data) });
+        }
+    }
+}
+
+int ProcessReadyChunks(const std::unordered_set<ChunkKey, ChunkKeyHash>& needed, int maxPerFrame)
+{
+    int merged = 0;
+    int processed = 0;
+    while (processed < maxPerFrame) {
+        std::pair<ChunkKey, ChunkData> item;
+        {
+            std::lock_guard<std::mutex> lk(g_chunkMutex);
+            if (g_chunkReadyQueue.empty()) break;
+            item = std::move(g_chunkReadyQueue.front());
+            g_chunkReadyQueue.pop();
+            g_chunkLoading.erase(item.first);
+        }
+
+        if (needed.find(item.first) != needed.end()) {
+            g_loadedChunks.emplace(item.first, std::move(item.second));
+            merged++;
+        }
+        processed++;
+    }
+    return merged;
 }
 
 // ============================================================================
@@ -1023,144 +1351,29 @@ bool InitializeScene()
     g_terrainMesh = new InstancedMesh(cubeData.vertices, cubeData.indices);
 
 
-    // 3. 生成随机 Minecraft 风格地图 (使用 Perlin Noise)
-    Perlin2D perlin(12345);
-    TerrainParams tp;
-    
-    // 生成地形 (64x64 区域)
-    const int mapSize = 64; 
-    
-    std::vector<glm::vec3> instancePositions;
-    std::vector<glm::vec3> instanceColors;
-    g_terrainPositions.clear(); // 清空物理数据
-    g_cubes.clear(); // ！！！重要：清空旧的立方体数据，重新填充
-    g_spatialGrid.Clear(); // 清空空间网格
-    
-    std::mt19937 rng(std::random_device{}());
-    
-    for (int x = -mapSize; x < mapSize; ++x)
-    {
-        for (int z = -mapSize; z < mapSize; ++z)
-        {
-            float h = terrainHeight(perlin, tp, x, z);
-            int height = static_cast<int>(std::floor(h));
-            
-            // 填充从底部到地表
-            int bottomY = height - 4; 
-            if (bottomY < -10) bottomY = -10;
-
-            for (int y = bottomY; y <= height; ++y)
-            {
-                BlockType type = BlockType::Stone;
-                
-                // 简单的生物群落规则
-                if (y == height) {
-                    if (y < tp.waterLevel) type = BlockType::Sand; 
-                    else if (y < tp.waterLevel + tp.beachHeight) type = BlockType::Sand;
-                    else if (y > tp.snowHeight) type = BlockType::Snow;
-                    else type = BlockType::Grass;
-                } else if (y > height - 3) {
-                    type = BlockType::Dirt;
-                }
-
-                glm::vec3 pos(x * 1.0f, y * 1.0f, z * 1.0f);
-                glm::vec3 color = getBlockColor(type);
-
-                instancePositions.push_back(pos);
-                g_terrainPositions.push_back(pos);
-                instanceColors.push_back(color);
-                
-                // ！！！添加 CubeObject 到 g_cubes，修复灰色屏幕和射击问题
-                // 注意：vector 扩容会导致指针失效，所以我们最好先 reserve，或者用 list，或者最后再构建 grid。
-                // 为了避免指针失效，我们修改 CubeObject 的存储方式？
-                // 或者简单点：我们先生成完所有 g_cubes，然后再构建 SpatialGrid。
-                CubeObject cube;
-                cube.position = pos;
-                cube.scale = glm::vec3(1.0f);
-                cube.color = color;
-                g_cubes.push_back(cube);
-                
-                // 树木生成 (只在草地上)
-                if (y == height && type == BlockType::Grass) {
-                    float randVal = (float)(rng() % 1000) / 1000.0f;
-                    if (randVal > tp.treeThreshold) {
-                        int treeHeight = 4 + (rng() % 3);
-                        // 树干
-                        for (int th = 1; th <= treeHeight; ++th) {
-                            glm::vec3 tPos = pos + glm::vec3(0.0f, (float)th, 0.0f);
-                            glm::vec3 tColor = getBlockColor(BlockType::Wood);
-                            instancePositions.push_back(tPos);
-                            g_terrainPositions.push_back(tPos); 
-                            instanceColors.push_back(tColor);
-
-                            CubeObject tCube;
-                            tCube.position = tPos;
-                            tCube.scale = glm::vec3(1.0f);
-                            tCube.color = tColor;
-                            g_cubes.push_back(tCube);
-                        }
-                        // 简化树叶：只在树顶加个 3x3x2 的盖子
-                        for(int lx=-1; lx<=1; ++lx) {
-                            for(int lz=-1; lz<=1; ++lz) {
-                                for(int ly=0; ly<=1; ++ly) {
-                                    glm::vec3 lPos = pos + glm::vec3((float)lx, (float)treeHeight + (float)ly, (float)lz);
-                                    if (lx==0 && lz==0 && ly==0) continue; // 树干位置
-                                    glm::vec3 lColor = getBlockColor(BlockType::Leaves);
-                                    instancePositions.push_back(lPos);
-                                    instanceColors.push_back(lColor);
-
-                                    CubeObject lCube;
-                                    lCube.position = lPos;
-                                    lCube.scale = glm::vec3(1.0f);
-                                    lCube.color = lColor;
-                                    g_cubes.push_back(lCube);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // 水面填充
-            if (height < tp.waterLevel) {
-                for (int y = height + 1; y <= (int)tp.waterLevel; ++y) {
-                    glm::vec3 pos(x * 1.0f, y * 1.0f, z * 1.0f);
-                    glm::vec3 color = getBlockColor(BlockType::Water);
-                    instancePositions.push_back(pos);
-                    instanceColors.push_back(color);
-
-                    CubeObject wCube;
-                    wCube.position = pos;
-                    wCube.scale = glm::vec3(1.0f);
-                    wCube.color = color;
-                    g_cubes.push_back(wCube);
-                }
-            }
-        }
+    // 3. 初始化分块地形并基于视距加载
+    g_cubes.clear();
+    g_terrainPositions.clear();
+    g_spatialHash.Clear();
+    if (!g_chunkThreadStarted) {
+        g_chunkThreadExit = false;
+        g_chunkThread = std::thread(ChunkLoaderThread);
+        g_chunkThreadStarted = true;
     }
 
-    
-    // 上传数据到 GPU
-    g_terrainMesh->updateInstanceData(instancePositions, instanceColors);
-    
-    // 构建空间网格 (在 g_cubes 填充完毕后)
-    for (auto& cube : g_cubes) {
-        g_spatialGrid.Add(&cube);
-    }
-    
-    std::cout << "[Init] Terrain generated. Block count: " << instancePositions.size() << std::endl;
+    // 先同步生成玩家所在区块，避免首帧掉落
+    ChunkKey origin = WorldToChunk(g_camera.GetPosition());
+    g_loadedChunks.emplace(origin, GenerateChunk(origin));
+    RebuildVisibleTerrain();
+    // 再异步加载视距内其他区块
+    UpdateVisibleChunks(g_camera.GetPosition(), true);
+    std::cout << "[Init] Terrain generated (streaming). Block count: " << g_visibleInstanceCount << std::endl;
 
     // 4. 调整摄像机高度以防出生在地底
-    // 寻找 (0,0) 附近的最高点
-    float spawnY = 5.0f; // 默认高度
-    for (const auto& pos : g_terrainPositions) {
-        if (std::abs(pos.x - 0.0f) < 1.0f && std::abs(pos.z - 0.0f) < 1.0f) {
-            if (pos.y > spawnY) spawnY = pos.y;
-        }
-    }
-    // 设置摄像机位置 (在最高点上方 2.0f)
-    g_camera.SetPosition(glm::vec3(0.0f, spawnY + 2.0f, 0.0f));
-    std::cout << "[Init] Adjusted spawn height: " << spawnY + 2.0f << std::endl;
+    float spawnY = SampleTerrainHeight(0, 0) + 2.0f;
+    if (spawnY < g_terrainParams.waterLevel + 2.0f) spawnY = g_terrainParams.waterLevel + 2.0f;
+    g_camera.SetPosition(glm::vec3(0.0f, spawnY, 0.0f));
+    std::cout << "[Init] Adjusted spawn height: " << spawnY << std::endl;
 
     // 初始化准星
     g_crosshairShader = new Shader("shaders/crosshair.vert", "shaders/crosshair.frag");
@@ -1229,6 +1442,17 @@ bool InitializeScene()
 void Cleanup()
 {
     std::cout << "[Cleanup] Releasing system resources..." << std::endl;
+
+    // 停止区块线程
+    if (g_chunkThreadStarted) {
+        {
+            std::lock_guard<std::mutex> lk(g_chunkMutex);
+            g_chunkThreadExit = true;
+        }
+        g_chunkCV.notify_all();
+        if (g_chunkThread.joinable()) g_chunkThread.join();
+        g_chunkThreadStarted = false;
+    }
 
     delete g_shader;
     delete g_instancedShader;
@@ -1302,6 +1526,9 @@ void RenderLoop()
         // 跳跃输入
         if (glfwGetKey(g_window, GLFW_KEY_SPACE) == GLFW_PRESS)
             g_camera.ProcessJump();
+
+        // 视距内加载地形
+        UpdateVisibleChunks(g_camera.GetPosition());
         
         // 射击输入 (连发)
         if (!g_isPaused && glfwGetMouseButton(g_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
@@ -1327,11 +1554,12 @@ void RenderLoop()
         glm::mat4 view = g_camera.GetViewMatrix();
         // 投影矩阵使用当前窗口宽高比，支持任意窗口拉伸
         float aspect = (g_windowHeight > 0) ? (static_cast<float>(g_windowWidth) / static_cast<float>(g_windowHeight)) : (16.0f / 9.0f);
+        float farClip = VIEW_DISTANCE_WORLD + 40.0f;
         glm::mat4 projection = g_camera.GetProjectionMatrix(
             g_camera.GetFOV(),                        // FOV (动态获取)
             aspect,                                   // 当前窗口宽高比
             0.1f,                                     // 近裁剪面
-            100.0f                                    // 远裁剪面
+            farClip                                   // 远裁剪面
         );
 
         // 设置全局 Uniforms
@@ -1382,7 +1610,7 @@ void RenderLoop()
             g_instancedShader->setFloat("uMaterial_Shininess", 8.0f);
             
             // 绘制调用：只需要一次！
-            g_terrainMesh->drawInstanced(static_cast<unsigned int>(g_cubes.size()));
+            g_terrainMesh->drawInstanced(static_cast<unsigned int>(g_visibleInstanceCount));
         }
 
         // 切换回标准着色器绘制其他物体
@@ -1400,10 +1628,11 @@ void RenderLoop()
         {
             // 如果没暂停，才更新逻辑
             if (!g_isPaused) {
-                g_director->Update(g_deltaTime, g_isShooting);
-                g_isShooting = false; 
                 glm::vec3 playerPos = g_camera.GetPosition();
+                g_director->Update(g_deltaTime, g_isShooting, playerPos, VIEW_DISTANCE_WORLD);
+                g_isShooting = false; 
                 g_enemyPool->UpdateAll(g_deltaTime, playerPos, g_terrainPositions);
+                EnforceEnemyViewDistance(playerPos);
             }
             else 
             {

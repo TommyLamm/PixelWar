@@ -3,7 +3,7 @@
 #include <iostream>
 
 InstancedMesh::InstancedMesh(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices)
-    : Mesh(vertices, indices), m_instanceVBO_Pos(0), m_instanceVBO_Color(0)
+    : Mesh(vertices, indices), m_instanceVBO_Pos(0), m_instanceVBO_Color(0), m_capacityPos(0), m_capacityColor(0)
 {
     // Mesh 构造函数已经设置了 VAO 和 基础 VBO (Pos, Normal)
     // 现在我们需要添加实例属性
@@ -37,15 +37,27 @@ InstancedMesh::~InstancedMesh()
 
 void InstancedMesh::updateInstanceData(const std::vector<glm::vec3>& positions, const std::vector<glm::vec3>& colors)
 {
+    if (positions.empty() || colors.empty()) return;
+
     glBindVertexArray(VAO);
 
     // 更新位置数据
     glBindBuffer(GL_ARRAY_BUFFER, m_instanceVBO_Pos);
-    glBufferData(GL_ARRAY_BUFFER, positions.size() * sizeof(glm::vec3), positions.data(), GL_STATIC_DRAW);
+    size_t bytesPos = positions.size() * sizeof(glm::vec3);
+    if (bytesPos > m_capacityPos) {
+        m_capacityPos = static_cast<size_t>(bytesPos * 1.5f);
+        glBufferData(GL_ARRAY_BUFFER, m_capacityPos, nullptr, GL_DYNAMIC_DRAW); // orphan & reserve
+    }
+    glBufferSubData(GL_ARRAY_BUFFER, 0, bytesPos, positions.data());
 
     // 更新颜色数据
     glBindBuffer(GL_ARRAY_BUFFER, m_instanceVBO_Color);
-    glBufferData(GL_ARRAY_BUFFER, colors.size() * sizeof(glm::vec3), colors.data(), GL_STATIC_DRAW);
+    size_t bytesColor = colors.size() * sizeof(glm::vec3);
+    if (bytesColor > m_capacityColor) {
+        m_capacityColor = static_cast<size_t>(bytesColor * 1.5f);
+        glBufferData(GL_ARRAY_BUFFER, m_capacityColor, nullptr, GL_DYNAMIC_DRAW);
+    }
+    glBufferSubData(GL_ARRAY_BUFFER, 0, bytesColor, colors.data());
 
     glBindVertexArray(0);
 }

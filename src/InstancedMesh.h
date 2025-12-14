@@ -18,4 +18,6 @@ public:
 private:
     unsigned int m_instanceVBO_Pos;
     unsigned int m_instanceVBO_Color;
+    size_t m_capacityPos;
+    size_t m_capacityColor;
 };

@@ -193,6 +193,13 @@ void Enemy::Kill()
     }
 }
 
+void Enemy::DeactivateForPool()
+{
+    m_state = EnemyState::Inactive;
+    m_velocity = glm::vec3(0.0f);
+    m_deathTimer = 0.0f;
+}
+
 bool Enemy::CanBeRecycled() const
 {
     return m_state == EnemyState::Dead && m_deathTimer > m_deathDuration;

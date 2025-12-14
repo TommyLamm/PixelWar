@@ -7,7 +7,7 @@ public:
     AIDirector(EnemyPool* enemyPool);
     
     // 更新导演逻辑
-    void Update(float deltaTime, bool playerIsShooting);
+    void Update(float deltaTime, bool playerIsShooting, const glm::vec3& playerPos, float viewDistance);
     
     // 查询状态
     bool IsHordeActive() const { return m_hordeActive; }
@@ -37,7 +37,7 @@ private:
     
     // 辅助函数
     void TriggerHorde(int enemyCount);
-    void SpawnWave(int count);
+    void SpawnWave(int count, const glm::vec3& playerPos, float viewDistance);
     void UpdateTension(bool playerIsShooting);
-    glm::vec3 GetRandomSpawnPosition();
+    glm::vec3 GetRandomSpawnPosition(const glm::vec3& playerPos, float viewDistance);
 };
