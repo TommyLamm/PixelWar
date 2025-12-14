@@ -1,18 +1,13 @@
-# OpenGL Base Rendering Framework
+# OpenGL FPS Sandbox (Procedural Terrain)
 
-A from-scratch OpenGL rendering framework built with C++, GLFW, and GLAD. It serves as a baseline for building a Left 4 Dead 2–style FPS sandbox with procedural terrain and basic combat systems.
+From-scratch OpenGL sandbox built with C++/GLFW/GLAD. It targets a Left 4 Dead 2–style FPS loop with procedural “Minecraft-like” terrain, instanced rendering, and lightweight enemy AI.
 
-## Features
-- 1280x720 window creation (runtime uses fixed 16:9 at 1600x900)
-- Game loop with dark gray clear color (0.2, 0.2, 0.2)
-- ESC key quits or toggles the pause menu
-- Pause menu exposes sensitivity/FOV sliders; values persist to `settings.ini`
-- FPS camera with gravity, jump, and AABB collision/slide
-- Enemy AI pool plus lightweight director; ray-based shooting with spread and fire-rate limit
-- Procedural terrain via Perlin FBM with biomes (water/sand/grass/dirt/stone/snow) and trees
-- Instanced cube rendering for terrain; standard shader for dynamic objects
-- Crosshair UI and bullet trail rendering
-- Structured logging and modular code for easy extension
+## Highlights
+- FPS camera with gravity, jump, AABB collision/slide, sensitivity & FOV that persist to `settings.ini`
+- Enemy pool + director with ray-based shooting (spread + fire rate), bullet trails, crosshair UI
+- Procedural terrain (Perlin FBM) with simple biomes and trees; instanced cube rendering for terrain
+- Streaming chunks with front-priority scheduling, batched rebuilds, and pre-sized instance buffers to reduce stutter (inspired by Sodium-style chunk handling)
+- Simple dark-gray default clear, pause menu (ESC), structured logging
 
 ## Dependencies
 1. **GLFW 3.3+** – windowing and input  
@@ -48,7 +43,9 @@ Then place `src/glad.c` into `src/` and headers into `include/glad/`.
 ## Controls & notes
 - WASD move, Space jump, Mouse look, LMB fire, ESC pause/resume
 - Pause menu shows sensitivity/FOV (progress bars); values persist to `settings.ini`
-- Shooting uses spatial grid + AABB raycast; bullet trails fade quickly
+- Chunk streaming: front-first queueing, capped merges per frame, and delayed instance-buffer rebuilds to smooth hitching
+- Terrain: surface-only voxels (plus water/trees) to minimize instance count
+- Shooting uses spatial hash + AABB raycast; bullet trails fade quickly
 
 ## License
 For learning and research use only.
